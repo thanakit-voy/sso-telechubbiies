@@ -1,0 +1,103 @@
+version: "3.8"
+name: telechubbies
+# PRODUCTION compose - ใช้ port 3001 (frontend), ไม่เปิด backend/db port
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: telechubbiies-db-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres}
+      POSTGRES_DB: ${DB_NAME:-telechubbiies}
+    volumes:
+      - postgres_data_prod:/var/lib/postgresql/data
+    # ไม่เปิด port ออกภายนอก - Backend เข้าถึงผ่าน Docker network
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - telechubbiies-prod-network
+
+  # FastAPI Backend
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: telechubbiies-backend-prod
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD:-postgres}@db:5432/${DB_NAME:-telechubbiies}
+      - SECRET_KEY=${SECRET_KEY:-change-this-to-a-super-secret-key}
+      - ENVIRONMENT=production
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:3001}
+      - BACKEND_URL=${BACKEND_URL:-http://localhost:8001}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-Telechubbiies SSO}
+    volumes:
+      - uploads_data_prod:/app/uploads
+    # ไม่เปิด port ออกภายนอก - เข้าถึงผ่าน Nginx เท่านั้น
+    expose:
+      - "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - telechubbiies-prod-network
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=${BACKEND_URL:-http://localhost:8001}
+        - NEXT_PUBLIC_APP_URL=${FRONTEND_URL:-http://localhost:3001}
+    container_name: telechubbiies-frontend-prod
+    restart: unless-stopped
+    environment:
+      - NEXT_PUBLIC_API_URL=${BACKEND_URL:-http://localhost:8001}
+      - NEXT_PUBLIC_APP_URL=${FRONTEND_URL:-http://localhost:3001}
+    ports:
+      - "3001:3000"
+    depends_on:
+      - backend
+    networks:
+      - telechubbiies-prod-network
+
+  # Nginx Reverse Proxy (optional - for production with HTTPS)
+  nginx:
+    image: nginx:alpine
+    container_name: telechubbiies-nginx-prod
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    depends_on:
+      - frontend
+      - backend
+    networks:
+      - telechubbiies-prod-network
+    profiles:
+      - production
+
+volumes:
+  postgres_data_prod:
+  uploads_data_prod:
+
+networks:
+  telechubbiies-prod-network:
+    name: telechubbiies-prod-network
+    driver: bridge
